@@ -36,7 +36,9 @@ web_server:
 
 external_components:
   - source:
-      type: local
+      type: git
+      url: https://github.com/Xzatrox/esphome-usb-serial-wifi
+      ref: main
       path: esphome_components
     components: [stream_server, usb_host, usb_uart, usb_ip]
 

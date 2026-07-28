@@ -140,6 +140,62 @@ The ZBT-1 uses EZSP/ASH firmware (not CPC). bellows sends ASH reset frames (`1a1
 | ZHA `TimeoutError` | EFR32 in reset | Add `SET_MHS` DTR+RTS to CP210x init |
 | Logger garbled / no output | USB-C used for JTAG | Set `hardware_uart: UART0` in logger |
 
+## USB/IP — Bluetooth Dongle over WiFi
+
+The `usb_ip` component exposes any USB device connected to the ESP32-S3 as a USB/IP server. The primary use case is a Bluetooth USB dongle with an external antenna, exposed to Home Assistant as a local USB device via the Linux USB/IP kernel module.
+
+### Hardware
+
+- Any USB Bluetooth adapter (tested: Realtek RTL8761BUV, VID `0x0BDA` PID `0xA728`)
+- Connected via USB hub to XIAO ESP32-S3 (same hub as ZBT-1 if desired)
+
+### YAML
+
+```yaml
+external_components:
+  - source:
+      type: local
+      path: esphome_components
+    components: [usb_host, usb_ip]
+
+usb_host:
+  max_transfer_requests: 32
+
+usb_ip:
+  port: 3240  # standard USB/IP port
+```
+
+### Home Assistant / Linux setup
+
+On the HA host (or any Linux machine):
+
+```bash
+# Load the USB/IP VHCI kernel module
+sudo modprobe vhci-hcd
+
+# List devices exported by the ESP32
+usbip list -r 10.0.0.78
+
+# Attach the device (creates a local /dev/bus/usb entry)
+sudo usbip attach -r 10.0.0.78 -b 1-1
+
+# Verify it appeared
+lsusb
+
+# Detach when done
+sudo usbip detach -p 0
+```
+
+Once attached, the Bluetooth adapter appears as a local USB device and the standard `btusb` kernel driver binds to it automatically. Home Assistant's Bluetooth integration will detect it.
+
+### Notes
+
+- USB/IP standard port is 3240
+- Only one client can be attached at a time
+- The component exposes whichever USB device enumerates first on the hub port
+- Hot-plug is supported: if the dongle is unplugged and replugged, the server updates automatically (client must re-attach)
+- The `usb_host` PHY init and hub support fixes from the Zigbee proxy apply here identically
+
 ## License
 
 MIT

@@ -38,7 +38,7 @@ external_components:
   - source:
       type: local
       path: esphome_components
-    components: [stream_server, usb_host, usb_uart]
+    components: [stream_server, usb_host, usb_uart, usb_ip]
 
 usb_host:
   enable_hubs: true
@@ -56,3 +56,10 @@ usb_uart:
 stream_server:
   uart_id: zigbee_channel
   port: 6638
+
+# Bluetooth dongle (Realtek RTL8761BUV)
+# On HA host: sudo modprobe vhci-hcd && sudo usbip attach -r 10.0.0.78 -b 1-1
+usb_ip:
+  vid: 0x0BDA
+  pid: 0xA728
+  port: 3240

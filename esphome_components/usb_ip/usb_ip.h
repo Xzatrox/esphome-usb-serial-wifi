@@ -5,7 +5,11 @@
 #include "esphome/core/component.h"
 #include "usb/usb_host.h"
 #include <string.h>
+#include <cstddef>
 #include <vector>
+#include <unordered_map>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 namespace esphome::usb_ip {
 
@@ -59,6 +63,55 @@ struct usbip_unlink_t {
 };
 #pragma pack(pop)
 
+// Wire format size assertions — ensure packing produces correct protocol sizes
+static_assert(sizeof(usbip_request_t) == 8, "usbip_request_t must be 8 bytes (OP header)");
+static_assert(sizeof(usbip_interface_t) == 4, "usbip_interface_t must be 4 bytes");
+static_assert(sizeof(usbip_header_basic_t) == 20, "usbip_header_basic_t must be 20 bytes");
+static_assert(sizeof(usbip_unlink_t) == 48, "usbip_unlink_t must be 48 bytes");
+
+// OP_REP_IMPORT: 8 (header) + 312 (device struct) = 320 bytes
+static_assert(sizeof(usbip_import_t) == 320, "usbip_import_t must be 320 bytes (8 header + 312 device)");
+
+// Verify import device descriptor offsets match devlist (after 8-byte header)
+static_assert(offsetof(usbip_import_t, path) == 8, "import path must start at offset 8");
+static_assert(offsetof(usbip_import_t, busid) == 264, "import busid must start at offset 264");
+static_assert(offsetof(usbip_import_t, busnum) == 296, "import busnum must start at offset 296");
+static_assert(offsetof(usbip_import_t, idVendor) == 308, "import idVendor must start at offset 308");
+static_assert(offsetof(usbip_import_t, bNumInterfaces) == 319, "import bNumInterfaces must be at offset 319");
+
+// OP_REP_DEVLIST: 12 (header+count) + 312 (device struct) + 40 (10 interfaces) = 364 bytes
+static_assert(sizeof(usbip_devlist_t) == 364, "usbip_devlist_t must be 364 bytes (12 header + 312 device + 40 intfs)");
+
+// Verify the device descriptor portion offset: after header(8) + count(4) = 12 bytes,
+// the 312-byte device struct spans from offset 12 to 323
+static_assert(offsetof(usbip_devlist_t, path) == 12, "devlist path must start at offset 12");
+static_assert(offsetof(usbip_devlist_t, busid) == 268, "devlist busid must start at offset 268");
+static_assert(offsetof(usbip_devlist_t, busnum) == 300, "devlist busnum must start at offset 300");
+static_assert(offsetof(usbip_devlist_t, devnum) == 304, "devlist devnum must start at offset 304");
+static_assert(offsetof(usbip_devlist_t, speed) == 308, "devlist speed must start at offset 308");
+static_assert(offsetof(usbip_devlist_t, idVendor) == 312, "devlist idVendor must start at offset 312");
+static_assert(offsetof(usbip_devlist_t, idProduct) == 314, "devlist idProduct must start at offset 314");
+static_assert(offsetof(usbip_devlist_t, bcdDevice) == 316, "devlist bcdDevice must start at offset 316");
+static_assert(offsetof(usbip_devlist_t, bDeviceClass) == 318, "devlist bDeviceClass must start at offset 318");
+static_assert(offsetof(usbip_devlist_t, bDeviceSubClass) == 319, "devlist bDeviceSubClass must start at offset 319");
+static_assert(offsetof(usbip_devlist_t, bDeviceProtocol) == 320, "devlist bDeviceProtocol must start at offset 320");
+static_assert(offsetof(usbip_devlist_t, bConfigurationValue) == 321, "devlist bConfigurationValue must start at offset 321");
+static_assert(offsetof(usbip_devlist_t, bNumConfigurations) == 322, "devlist bNumConfigurations must start at offset 322");
+static_assert(offsetof(usbip_devlist_t, bNumInterfaces) == 323, "devlist bNumInterfaces must start at offset 323");
+static_assert(offsetof(usbip_devlist_t, intfs) == 324, "devlist intfs must start at offset 324 (12 + 312)");
+
+// Forward declaration for XferCtx
+class USBIPComponent;
+
+// Per-URB tracking context (heap-allocated)
+struct XferCtx {
+  usbip_submit_t *req;
+  int sock;
+  USBIPComponent *self;
+  uint32_t seqnum;
+  bool cancelled;
+};
+
 class USBIPComponent : public esphome::Component {
  public:
   void set_port(uint16_t port) { port_ = port; }
@@ -71,6 +124,7 @@ class USBIPComponent : public esphome::Component {
   void dump_config() override;
 
   void parse_request(int sock, uint8_t *buf, size_t len);
+  size_t send_response(const void *data, size_t len);
 
  private:
   void on_device_connected(usb_device_handle_t dev_hdl, const usb_device_desc_t *dev_desc,
@@ -78,9 +132,9 @@ class USBIPComponent : public esphome::Component {
   void on_device_disconnected();
   void fill_devlist_();
   void fill_import_();
-  esp_err_t req_ctrl_xfer_(usbip_submit_t *req);
-  esp_err_t req_ep_xfer_(usbip_submit_t *req);
-  void ensure_interfaces_claimed_();
+  esp_err_t req_ctrl_xfer_(usbip_submit_t *req, XferCtx *ctx);
+  esp_err_t req_ep_xfer_(usbip_submit_t *req, XferCtx *ctx);
+  bool ensure_interfaces_claimed_();
 
   static void tcp_task_(void *arg);
   static void client_event_cb_(const usb_host_client_event_msg_t *msg, void *arg);
@@ -101,6 +155,14 @@ class USBIPComponent : public esphome::Component {
   int listen_sock_{-1};
   int client_sock_{-1};
   uint8_t rx_buf_[4096]{};
+
+  SemaphoreHandle_t send_mutex_{nullptr};
+  SemaphoreHandle_t pending_mutex_{nullptr};
+  std::unordered_map<uint32_t, XferCtx*> pending_urbs_;
+
+  void cleanup_connection_();
+  static int32_t map_usb_status(usb_transfer_status_t status);
+  static uint32_t map_device_speed(usb_speed_t speed);
 };
 
 }  // namespace esphome::usb_ip

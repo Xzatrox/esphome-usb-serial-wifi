@@ -324,7 +324,11 @@ esp_err_t USBIPComponent::req_ctrl_xfer_(usbip_submit_t *req, XferCtx *ctx) {
   int out_len = (__bswap_32(req->header.direction) == 0) ? __bswap_32(req->length) : 0;
   memcpy(xfer->data_buffer, &req->setup, 8);
   if (out_len > 0) memcpy(xfer->data_buffer + 8, req->transfer_buffer, out_len);
-  xfer->num_bytes = 8 + out_len;
+  // ESP-IDF USB Host requires num_bytes = 8 (setup) + wLength for control transfers.
+  // For OUT: wLength == out_len (data we're sending).
+  // For IN: wLength comes from the setup packet (bytes 6-7, little-endian).
+  usb_setup_packet_t *setup = (usb_setup_packet_t *)xfer->data_buffer;
+  xfer->num_bytes = 8 + setup->wLength;
   xfer->context = ctx;
   esp_err_t err = usb_host_transfer_submit_control(client_hdl_, xfer);
   if (err != ESP_OK) {
